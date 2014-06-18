@@ -97,7 +97,7 @@ The following example script reads in a file in Quoted-Printable encoding, decod
 ```javascript
 var libqp = require('libqp');
 var fs = require('fs');
-var encoded = fs.createReadStream(encoded.txt');
+var encoded = fs.createReadStream('encoded.txt');
 var dest = fs.createReadStream('dest.txt');
 var decoder = new libqp.Decoder();
 
