@@ -69,6 +69,10 @@ describe('libqp', function() {
                 expect(libqp.wrap(test[0], 20)).to.equal(test[1]);
             });
         });
+
+        it('should wrap line ending with <CR>', function() {
+            expect(libqp.wrap('alfa palfa kalfa ralfa\r', 10)).to.equal('alfa palf=\r\na kalfa =\r\nralfa\r');
+        });
     });
 
     describe('QP Streams', function() {
