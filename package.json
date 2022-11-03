@@ -1,6 +1,6 @@
 {
     "name": "libqp",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "description": "Encode and decode quoted-printable strings according to rfc2045",
     "main": "lib/libqp.js",
     "scripts": {
