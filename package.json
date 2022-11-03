@@ -1,0 +1,27 @@
+{
+    "name": "libqp",
+    "version": "2.0.0",
+    "description": "Encode and decode quoted-printable strings according to rfc2045",
+    "main": "lib/libqp.js",
+    "scripts": {
+        "test": "node --test test/"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git://github.com/andris9/libqp.git"
+    },
+    "keywords": [
+        "quoted-printable",
+        "mime"
+    ],
+    "author": "Andris Reinman",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/andris9/libqp/issues"
+    },
+    "homepage": "https://github.com/andris9/libqp",
+    "devDependencies": {
+        "eslint-config-nodemailer": "1.2.0",
+        "eslint-config-prettier": "8.5.0"
+    }
+}
