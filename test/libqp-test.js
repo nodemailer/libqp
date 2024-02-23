@@ -1,5 +1,6 @@
 'use strict';
 
+const { Buffer } = require('node:buffer');
 const test = require('node:test');
 const assert = require('node:assert').strict;
 
