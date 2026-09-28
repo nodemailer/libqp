@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.2](https://github.com/nodemailer/libqp/compare/v2.1.1...v2.1.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **decoder:** keep raw 8-bit bytes intact when decoding ([7bbdcbe](https://github.com/nodemailer/libqp/commit/7bbdcbeac4475e5e16b7f24a578ed6209de133a8))
+
 ## [2.1.1](https://github.com/nodemailer/libqp/compare/v2.1.0...v2.1.1) (2024-11-29)
 
 
