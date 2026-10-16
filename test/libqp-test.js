@@ -256,3 +256,111 @@ test('Raw 8-bit bytes in Quoted-Printable input', async t => {
         assert.deepStrictEqual(await decodeStream([input.subarray(0, 9), input.subarray(9)]), expected);
     });
 });
+
+test('Hyphens at the start of a line', async t => {
+    const encodeStream = async (chunks, options) =>
+        await new Promise((resolve, reject) => {
+            const encoder = new libqp.Encoder(options);
+            const output = [];
+            encoder.on('data', chunk => output.push(chunk));
+            encoder.on('end', () => resolve(Buffer.concat(output).toString()));
+            encoder.on('error', reject);
+            for (const chunk of chunks) {
+                encoder.write(chunk);
+            }
+            encoder.end();
+        });
+
+    await t.test('encode() escapes a hyphen that starts a line', async () => {
+        // two hyphens at the start of a line would read as a MIME boundary delimiter
+        assert.strictEqual(libqp.encode('--boundary\r\n-x'), '=2D-boundary\r\n=2Dx');
+        assert.strictEqual(libqp.encode('\n-'), '\n=2D');
+    });
+
+    await t.test('encode() keeps a hyphen inside a line', async () => {
+        assert.strictEqual(libqp.encode('a-b --c'), 'a-b --c');
+    });
+
+    await t.test('wrap() escapes a hyphen that a soft line break would move to the start of a line', async () => {
+        const input = 'a'.repeat(75) + '-x';
+        const wrapped = libqp.wrap(libqp.encode(input));
+        assert.strictEqual(wrapped, 'a'.repeat(75) + '=\r\n=2Dx');
+        assert.strictEqual(libqp.decode(wrapped).toString(), input);
+    });
+
+    await t.test('wrap() keeps every line within the line length when escaping', async () => {
+        const input = '-'.repeat(300);
+        const wrapped = libqp.wrap(libqp.encode(input));
+        const lines = wrapped.split('\r\n');
+        assert.ok(lines.length > 3);
+        for (const line of lines) {
+            assert.ok(line.length <= 76, `line too long: ${line.length}`);
+            assert.notStrictEqual(line.charAt(0), '-');
+        }
+        assert.strictEqual(libqp.decode(wrapped).toString(), input);
+    });
+
+    await t.test('Encoder escapes a hyphen at the start of a chunk only when it starts a line', async () => {
+        for (const options of [{}, { lineLength: false }]) {
+            assert.strictEqual(await encodeStream(['-a'], options), '=2Da');
+            assert.strictEqual(await encodeStream(['ab\n', '-c'], options), 'ab\n=2Dc');
+            assert.strictEqual(await encodeStream(['ab', '-c'], options), 'ab-c');
+        }
+    });
+
+    await t.test('Encoder output never starts a line with a hyphen', async () => {
+        // a body that decodes to a boundary delimiter followed by the headers of a part
+        const input = 'text\r\n--boundary\r\nContent-Type: application/x-evil; name=evil.exe\r\n\r\n' + '-'.repeat(200) + '\r\n';
+        const chunks = [];
+        for (let i = 0; i < input.length; i += 7) {
+            chunks.push(Buffer.from(input.substring(i, i + 7)));
+        }
+        for (const options of [{}, { lineLength: false }]) {
+            const encoded = await encodeStream(chunks, options);
+            assert.ok(!/(^|\n)-/.test(encoded), `line starts with a hyphen: ${JSON.stringify(encoded)}`);
+            assert.strictEqual(libqp.decode(encoded).toString(), input);
+        }
+    });
+});
+
+test('Trailing whitespace', async t => {
+    await t.test('decode() removes whitespace from the end of lines', async () => {
+        assert.strictEqual(libqp.decode('abc  \r\ndef \t\nghi  ').toString(), 'abc\r\ndef\nghi');
+        assert.strictEqual(libqp.decode('   \n   ').toString(), '\n');
+        assert.strictEqual(libqp.decode('a  b').toString(), 'a  b');
+    });
+
+    await t.test('decode() treats a soft line break with trailing whitespace as a soft line break', async () => {
+        assert.strictEqual(libqp.decode('foo= \t\r\nbar').toString(), 'foobar');
+    });
+
+    await t.test('decode() handles a long run of whitespace in linear time', async () => {
+        // the trim used to be quadratic on a run that does not end the line, 50 KB took 2 seconds
+        for (const chr of [' ', '\t']) {
+            const input = chr.repeat(500 * 1024) + 'x';
+            const start = Date.now();
+            const decoded = libqp.decode(input).toString('binary');
+            const duration = Date.now() - start;
+            assert.strictEqual(decoded, input);
+            assert.ok(duration < 500, `decoding took ${duration} ms`);
+        }
+    });
+});
+
+test('Escape sequences', async t => {
+    await t.test('decode() decodes valid escapes and keeps invalid ones', async () => {
+        assert.strictEqual(libqp.decode('=41=42=43').toString(), 'ABC');
+        assert.strictEqual(libqp.decode('=c3=a9').toString(), 'é');
+        assert.strictEqual(libqp.decode('=4G=4').toString(), '=4G=4');
+        assert.strictEqual(libqp.decode('==41').toString(), '=A');
+        assert.strictEqual(libqp.decode('a=\r\nb=\nc=').toString(), 'abc');
+    });
+
+    await t.test('decode() sizes the output for a body made of escapes', async () => {
+        const count = 1024 * 1024;
+        const decoded = libqp.decode('=41'.repeat(count));
+        assert.strictEqual(decoded.length, count);
+        assert.strictEqual(decoded[0], 0x41);
+        assert.strictEqual(decoded[count - 1], 0x41);
+    });
+});
