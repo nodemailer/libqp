@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.3](https://github.com/nodemailer/libqp/compare/v2.1.2...v2.1.3) (2026-10-16)
+
+
+### Bug Fixes
+
+* decode trailing whitespace in linear time and never start an encoded line with a hyphen ([9ece8c1](https://github.com/nodemailer/libqp/commit/9ece8c11826b88509afd968d5bc5b83f5f447e18))
+
 ## [2.1.2](https://github.com/nodemailer/libqp/compare/v2.1.1...v2.1.2) (2026-09-28)
 
 
