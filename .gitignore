@@ -1,3 +1,8 @@
 .DS_Store
 node_modules
 npm-debug.log*
+coverage/
+dist/
+*.tsbuildinfo
+*.tgz
+.claude
