@@ -16,7 +16,7 @@ jobs:
     release-please:
         runs-on: ubuntu-latest
         steps:
-            - uses: google-github-actions/release-please-action@v3
+            - uses: google-github-actions/release-please-action@db8f2c60ee802b3748b512940dde88eabd7b7e01 # v3
               id: release
               if: ${{ github.event_name == 'push' }}
               with:
@@ -26,9 +26,9 @@ jobs:
             # The logic below handles the npm publication through npm trusted publishing
             # (OIDC, no token secret): it runs when a new release is created, or on a
             # manual dispatch.
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
               if: ${{ steps.release.outputs.release_created || github.event_name == 'workflow_dispatch' }}
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
               with:
                   node-version: 24
                   registry-url: 'https://registry.npmjs.org'
