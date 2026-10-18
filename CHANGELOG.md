@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/nodemailer/libqp/compare/v2.1.3...v3.0.0) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* requires Node.js 20 or newer.
+
+### Features
+
+* rewrite in TypeScript with ES module and CommonJS builds ([eeb28aa](https://github.com/nodemailer/libqp/commit/eeb28aab2f7055f7d7f3decd8878c476acb581e5))
+
 ## [2.1.3](https://github.com/nodemailer/libqp/compare/v2.1.2...v2.1.3) (2026-10-16)
 
 
