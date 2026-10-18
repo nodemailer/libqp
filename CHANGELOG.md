@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/nodemailer/libqp/compare/v3.0.0...v3.0.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* escape a hyphen after a lone CR and stop wrap() from adding needless soft breaks ([1bc3c8e](https://github.com/nodemailer/libqp/commit/1bc3c8e66fa114877b95d5c280b5f2eed23420cf))
+
 ## [3.0.0](https://github.com/nodemailer/libqp/compare/v2.1.3...v3.0.0) (2026-10-18)
 
 
