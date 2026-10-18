@@ -276,6 +276,10 @@ describe('wrap()', () => {
         assert.strictEqual(wrap('=E2=82=AC=E2=82=AC', 10), '=E2=82=AC=\r\n=E2=82=AC');
     });
 
+    it('keeps a UTF-8 sequence on the line of a hyphen escape that holds nothing else', () => {
+        assert.strictEqual(wrap('=F0=90=80=80\t-=F0=90=80=80=00', 16), '=F0=90=80=80\t=\r\n=2D=F0=90=80=80=\r\n=00');
+    });
+
     it('moves an incomplete escape at the end of the input to its own line', () => {
         assert.strictEqual(wrap('abcdefg=C', 8), 'abcdefg=\r\n=C');
     });
@@ -285,9 +289,11 @@ describe('wrap()', () => {
         assert.strictEqual(wrap('abcd e', 6), 'abcd e');
     });
 
-    it('breaks a line only where the next one is longer than the room left for a space break', () => {
-        // the last line fills two thirds of the line length and has a space in its last third
+    it('keeps the rest of a line whole when it fits', () => {
+        // even with a space in its last third, where a longer line would be broken
         assert.strictEqual(wrap('abcdefghijk lm', 9), 'abcdefgh=\r\nijk lm');
+        assert.strictEqual(wrap('abcdefghijklm no', 9), 'abcdefgh=\r\nijklm no');
+        assert.strictEqual(wrap('abcdefghijklm no\nx', 9), 'abcdefgh=\r\nijklm no\nx');
     });
 
     it('starts the line after a hard line break with the full line length', () => {
@@ -300,6 +306,17 @@ describe('wrap()', () => {
         assert.strictEqual(wrap('a=C3=C0=B5bbbbbbbb', 10), 'a=C3=\r\n=C0=B5bbb=\r\nbbbbb');
         // =Cz is not an escape, so it ends the sequence search
         assert.strictEqual(wrap('a=C3=Cz=B5bbbbbbbb', 8), 'a=C3=Cz=\r\n=B5bbbb=\r\nbbbb');
+    });
+
+    it('does not count a line break towards the line length', () => {
+        // a line that fits is followed by its line break, not by a soft one
+        assert.strictEqual(wrap('aaaaaaa\nbb', 7), 'aaaaaaa\nbb');
+        assert.strictEqual(wrap('aaaaaaa\r\nbb', 7), 'aaaaaaa\r\nbb');
+        assert.strictEqual(wrap('aaaaaa\r\nbb', 7), 'aaaaaa\r\nbb');
+        // and the line after it starts with the full line length
+        assert.strictEqual(wrap('ab\ncdefghi', 7), 'ab\ncdefghi');
+        assert.strictEqual(wrap('\n=2D-=20', 7), '\n=2D-=20');
+        assert.strictEqual(wrap('ab\n' + 'c'.repeat(12), 6), 'ab\nccccc=\r\nccccc=\r\ncc');
     });
 
     it('treats a missing, zero or invalid line length as 76', () => {
@@ -337,7 +354,12 @@ describe('Hyphens at the start of a line', () => {
 
     it('encode() keeps a hyphen inside a line', () => {
         assert.strictEqual(encode('a-b --c'), 'a-b --c');
-        assert.strictEqual(encode('\r-'), '\r-');
+    });
+
+    it('encode() escapes a hyphen after a lone CR', () => {
+        // a relay that turns the CR into CRLF would start a line with the hyphen
+        assert.strictEqual(encode('a\r--b'), 'a\r=2D-b');
+        assert.strictEqual(encode(Buffer.from('a\r--b')), 'a\r=2D-b');
     });
 
     it('wrap() escapes a hyphen that a soft line break would move to the start of a line', () => {
@@ -482,6 +504,15 @@ describe('Encoder', () => {
     it('wraps held back whitespace with the line it ends', async () => {
         // found by the differential fuzz run, the last line fits without a soft break
         assert.strictEqual(await encodeStream([Buffer.from('\n-- ')], { lineLength: 7 }), '\n=2D-=20');
+    });
+
+    it('wraps a CR at the end of a chunk once it is known whether LF follows', async () => {
+        const input = Buffer.from('-\0\r\n-\0\rx');
+        const expected = wrap(encode(input), 6);
+        assert.strictEqual(expected, '=2D=00\r\n=2D=\r\n=00\rx');
+        assert.strictEqual(await encodeStream(split(input, 1), { lineLength: 6 }), expected);
+        // and at the end of the input
+        assert.strictEqual(await encodeStream(['abcdef', '\r'], { lineLength: 6 }), wrap('abcdef\r', 6));
     });
 
     it('ignores empty chunks', async () => {

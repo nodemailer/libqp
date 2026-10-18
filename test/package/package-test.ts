@@ -83,7 +83,7 @@ describe('Built package', () => {
         });
 
         it('keeps a file at the old deep import path for bundlers that ignore the exports map', () => {
-            // @yao/pkg resolves `libqp/lib/libqp` on disk, Node never loads this file
+            // for resolvers that look for `libqp/lib/libqp` on disk, Node never loads this file
             assert.strictEqual(require(path.join(root, 'lib', 'libqp.js')), require(packageName));
             assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(root, 'lib', 'package.json'), 'utf8')), { type: 'commonjs' });
             assert.ok(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).files.includes('lib'));

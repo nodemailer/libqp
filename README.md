@@ -75,7 +75,7 @@ libqp.wrap(str[, lineLength]) → String
 Where
 
 - **str** is a Quoted-Printable encoded string
-- **lineLength** (defaults to 76) is the maximum allowed line length. Any longer line will be soft wrapped. Values below 4 are raised to 4, the shortest line that fits an escape sequence and a soft line break
+- **lineLength** (defaults to 76) is the maximum allowed line length. Any longer line will be soft wrapped. Values below 4 are raised to 4, the shortest line that fits an escape sequence and a soft line break. Every line is wrapped on its own and a line break does not count towards the line length
 
 **Example**
 

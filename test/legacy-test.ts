@@ -21,11 +21,35 @@ const splitsUtf8 = (wrapped: string): boolean =>
         .slice(0, -1)
         .some(line => !isUtf8(decode(line)));
 
+// 2.1.3 kept a hyphen after a lone CR literal, a relay that turns the CR into CRLF would start a
+// line with it. In 2.1.3 output "\r" is followed by "-" only there, CRLF pairs are followed by "\n"
+const escapeHyphenAfterCr = (encoded: string): string => encoded.replace(/\r-/g, '\r=2D');
+
+// Checks a wrapped output against 2.1.3, a line at a time. 2.1.3 wrapped the input as one line,
+// counting line breaks as chars, so a line next to a line break was broken earlier than needed. It
+// also broke the rest of a line at a space when the rest fitted, so its output for a line can hold
+// one more soft break, in front of the last piece. Lines for which `skip` holds are not compared
+const assertWrapsLike2_1_3 = (actual: string, encoded: string, lineLength: number, skip?: (expected: string) => boolean): void => {
+    const parts = encoded.split(/(\r?\n)/);
+    for (let i = 0; i < parts.length; i += 2) {
+        const part = parts[i] as string;
+        const wrapped = wrap(part, lineLength);
+        const expected = legacy.wrap(part, lineLength);
+        if (wrapped !== expected && !skip?.(expected)) {
+            // the soft break 2.1.3 added, and the hyphen escape behind it
+            const merged = expected.replace(/[=]\r\n(=2D)?((?:(?![=]\r\n)[^])*)$/, (_, hyphen: string | undefined, rest: string) => (hyphen ? '-' : '') + rest);
+            assert.strictEqual(wrapped, merged, JSON.stringify(part));
+        }
+        parts[i] = wrapped;
+    }
+    assert.strictEqual(actual, parts.join(''));
+};
+
 describe('Compatibility with libqp 2.1.3', () => {
     it('encode() produces the same output', () => {
         fc.assert(
             fc.property(fc.oneof(bytes(), text()), input => {
-                assert.strictEqual(encode(input), legacy.encode(input));
+                assert.strictEqual(encode(input), escapeHyphenAfterCr(legacy.encode(input)));
             }),
             options
         );
@@ -48,29 +72,26 @@ describe('Compatibility with libqp 2.1.3', () => {
         );
     });
 
-    it('wrap() produces the same output for ASCII input', () => {
+    it('wrap() produces the same output for ASCII input, but for needless soft breaks', () => {
         // 2.1.3 looped forever below a line length of 5 and kept a hyphen escape and the
         // following escape on a line the escape left too little room for below 7
         fc.assert(
             fc.property(bytes(), fc.integer({ min: 7, max: 100 }), (input, lineLength) => {
                 const ascii = Buffer.from(input.map(byte => byte % 128));
                 const encoded = encode(ascii);
-                assert.strictEqual(wrap(encoded, lineLength), legacy.wrap(encoded, lineLength));
+                assertWrapsLike2_1_3(wrap(encoded, lineLength), encoded, lineLength);
             }),
             options
         );
     });
 
-    it('wrap() produces the same output for text unless 2.1.3 split a char', () => {
+    it('wrap() produces the same output for text unless 2.1.3 split a char, but for needless soft breaks', () => {
         // 2.1.3 stopped looking for the start of a char after four escapes, so a line could end
         // inside a char when the line held more than one
         fc.assert(
             fc.property(text(), fc.integer({ min: 16, max: 100 }), (input, lineLength) => {
                 const encoded = encode(input);
-                const expected = legacy.wrap(encoded, lineLength);
-                if (!splitsUtf8(expected)) {
-                    assert.strictEqual(wrap(encoded, lineLength), expected);
-                }
+                assertWrapsLike2_1_3(wrap(encoded, lineLength), encoded, lineLength, splitsUtf8);
             }),
             options
         );
@@ -80,23 +101,9 @@ describe('Compatibility with libqp 2.1.3', () => {
         await fc.assert(
             fc.asyncProperty(bytes(), fc.integer({ min: 7, max: 100 }), async (input, lineLength) => {
                 const ascii = Buffer.from(input.map(byte => byte % 128));
-                // the Encoder holds back trailing whitespace and wraps it on its own, and wrap() counts
-                // a line break at the start of its input towards the first line, so a wrapped last line
-                // can break at another place than 2.1.3, which wrapped the whole chunk at once
-                const last = ascii[ascii.length - 1];
-                const endsInWhitespace = last === 0x20 || last === 0x09;
-                for (const options of [{ lineLength: false as const }, { lineLength }]) {
-                    const output = await pipeChunks(new Encoder(options), [ascii]);
-                    const expected = await pipeChunks(new legacy.Encoder(options), [ascii]);
-                    if (endsInWhitespace && options.lineLength) {
-                        assert.deepStrictEqual(decode(output), decode(expected));
-                        for (const line of output.toString().split(/\r?\n/)) {
-                            assert.ok(line.length <= lineLength, JSON.stringify(line));
-                        }
-                    } else {
-                        assert.deepStrictEqual(output, expected);
-                    }
-                }
+                const unwrapped = escapeHyphenAfterCr(legacy.encode(ascii));
+                assert.strictEqual((await pipeChunks(new Encoder({ lineLength: false }), [ascii])).toString(), unwrapped);
+                assertWrapsLike2_1_3((await pipeChunks(new Encoder({ lineLength }), [ascii])).toString(), unwrapped, lineLength);
             }),
             options
         );

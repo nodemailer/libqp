@@ -223,6 +223,24 @@ describe('Properties of wrap()', () => {
         );
     });
 
+    it('wraps every line on its own', () => {
+        fc.assert(
+            fc.property(bytes(), lineLengths, (input, lineLength) => {
+                const encoded = encode(input);
+                const parts = encoded.split(/(\r?\n)/);
+                const expected = parts.map((part, i) => (i % 2 ? part : wrap(part, lineLength))).join('');
+                assert.strictEqual(wrap(encoded, lineLength), expected);
+                // a line that fits is kept as is
+                for (let i = 0; i < parts.length; i += 2) {
+                    if (parts[i]!.length <= effectiveLength(lineLength)) {
+                        assert.strictEqual(wrap(parts[i]!, lineLength), parts[i]);
+                    }
+                }
+            }),
+            options
+        );
+    });
+
     it('never splits an escape sequence', () => {
         fc.assert(
             fc.property(bytes(), lineLengths, (input, lineLength) => {
@@ -267,6 +285,16 @@ describe('Properties of the Encoder', () => {
                 for (const line of linesOf(output)) {
                     assert.ok(line.length <= max, `line ${JSON.stringify(line)} is longer than ${max}`);
                 }
+            }),
+            options
+        );
+    });
+
+    it('with wrapping, produces the same output as wrap() and encode() however the input is split', async () => {
+        await fc.assert(
+            fc.asyncProperty(bytes(), chunkSizes(), lineLengths, async (input, sizes, lineLength) => {
+                const output = (await pipeChunks(new Encoder({ lineLength }), split(input, sizes))).toString();
+                assert.strictEqual(output, wrap(encode(input), effectiveLength(lineLength)));
             }),
             options
         );

@@ -49,12 +49,13 @@ function encodeBytes(buffer: Uint8Array, next?: number, binary?: boolean, previo
         const loneLineBreak = binary && (ord === 0x0d ? following !== 0x0a : ord === 0x0a && preceding !== 0x0d);
         // if the char is in allowed range, then keep as is, unless it is a ws in the end of a line
         // or a hyphen in the start of a line. A line starting with two hyphens reads as a MIME
-        // boundary delimiter, so a decoded body that gets encoded again could inject a part
+        // boundary delimiter, so a decoded body that gets encoded again could inject a part. A lone
+        // CR counts as a line break here, a relay may turn it into CRLF
         if (
             QP_LITERAL[ord] &&
             !loneLineBreak &&
             !(isWhitespace(ord) && (following === undefined || following === 0x0a || following === 0x0d)) &&
-            !(ord === 0x2d && (preceding === undefined || preceding === 0x0a))
+            !(ord === 0x2d && (preceding === undefined || preceding === 0x0a || preceding === 0x0d))
         ) {
             output[pos++] = ord;
             continue;
@@ -160,81 +161,57 @@ export function wrap(str: string, lineLength?: number): string {
         return str;
     }
 
-    let pos = 0;
+    // every line is wrapped on its own, a line break does not count towards the line length
+    const parts = str.split(/(\r?\n)/);
+    for (let i = 0; i < parts.length; i += 2) {
+        parts[i] = wrapLine(parts[i] as string, lineLength);
+    }
+    return parts.join('');
+}
+
+/**
+ * Adds soft line breaks to one line of a Quoted-Printable string
+ *
+ * @param str Quoted-Printable encoded line, without line breaks
+ * @param lineLength Maximum allowed length for a line, at least MIN_LINE_LENGTH
+ * @returns Soft-wrapped line
+ */
+function wrapLine(str: string, lineLength: number): string {
     const len = str.length;
-    let afterSoftBreak = false;
     const lineMargin = Math.floor(lineLength / 3);
+    let pos = 0;
     let result = '';
 
-    // insert soft linebreaks where needed
-    while (pos < len) {
-        let maxLength = lineLength;
-
-        if (afterSoftBreak) {
-            afterSoftBreak = false;
-            // a line started by a soft break must not begin with a hyphen either, see encodeBytes().
-            // The escape takes the room of three characters off this line
-            if (str.charAt(pos) === '-') {
-                result += '=2D';
-                pos++;
-                maxLength -= 3;
-                if (maxLength < MIN_LINE_LENGTH && len - pos > maxLength) {
-                    // no room left for an escape and a soft break, end the line here
-                    result += '=\r\n';
-                    afterSoftBreak = true;
-                    continue;
-                }
-            }
+    // every pass either ends with the rest of the line or consumes input
+    for (;;) {
+        // a line started by a soft break must not begin with a hyphen either, see encodeBytes().
+        // The escape takes the place of the hyphen, as if the input held it
+        const escapeHyphen = pos > 0 && str.charCodeAt(pos) === 0x2d;
+        if (len - pos + (escapeHyphen ? 2 : 0) <= lineLength) {
+            // the rest fits on a line
+            result += escapeHyphen ? '=2D' + str.substr(pos + 1) : str.substr(pos);
+            break;
         }
-
-        let line = str.substr(pos, maxLength);
+        let line = escapeHyphen ? '=2D' + str.substr(pos + 1, lineLength - 3) : str.substr(pos, lineLength);
         let match: RegExpMatchArray | null;
-        const crlf = line.indexOf('\r\n');
-        if (crlf >= 0) {
-            line = line.substr(0, crlf + 2);
-            result += line;
-            pos += line.length;
-            continue;
-        }
 
-        if (line.substr(-1) === '\n') {
-            // nothing to change here
-            result += line;
-            pos += line.length;
-            continue;
-        }
-
-        if ((match = line.substr(-lineMargin).match(/\n.*?$/))) {
-            // truncate to nearest line break
-            line = line.substr(0, line.length - (match[0].length - 1));
-            result += line;
-            pos += line.length;
-            continue;
-        }
-
-        if (line.length > maxLength - lineMargin && (match = line.substr(-lineMargin).match(/[ \t.,!?][^ \t.,!?]*$/))) {
+        if ((match = line.substr(-lineMargin).match(/[ \t.,!?][^ \t.,!?]*$/))) {
             // truncate to nearest space
             line = line.substr(0, line.length - (match[0].length - 1));
-        } else if (line.length < len - pos && /[=][\da-f]{0,2}$/i.test(line)) {
-            // more input follows, so push an incomplete encoding sequence to the next line
-            // and ensure that utf-8 sequences are not split
+        } else if (/[=][\da-f]{0,2}$/i.test(line)) {
+            // push an incomplete encoding sequence to the next line and ensure that utf-8
+            // sequences are not split
             line = trimUtf8Sequence(line.replace(/[=][\da-f]?$/i, ''));
         }
 
-        if (pos + line.length < len && line.substr(-1) !== '\n') {
-            if (line.length === maxLength && /[=][\da-f]{2}$/i.test(line)) {
-                line = line.substr(0, line.length - 3);
-            } else if (line.length === maxLength) {
-                line = line.substr(0, line.length - 1);
-            }
-            pos += line.length;
-            line += '=\r\n';
-            afterSoftBreak = true;
-        } else {
-            pos += line.length;
+        // make room for the soft break, without splitting an encoding sequence
+        if (line.length === lineLength) {
+            line = line.substr(0, line.length - (/[=][\da-f]{2}$/i.test(line) ? 3 : 1));
         }
 
-        result += line;
+        // the escape stands for one char of the input
+        pos += escapeHyphen ? line.length - 2 : line.length;
+        result += line + '=\r\n';
     }
 
     return result;
@@ -242,7 +219,8 @@ export function wrap(str: string, lineLength?: number): string {
 
 /**
  * Cuts the escapes of a trailing UTF-8 sequence off a line, so that a soft line break does not
- * split the sequence. A line that holds nothing but the sequence is kept whole
+ * split the sequence. A line that holds nothing but the sequence, after the escape of a hyphen
+ * that starts the line, is kept whole
  *
  * @param line Quoted-Printable encoded line that ends with an escape
  * @returns The line without the escapes of its last multi-byte sequence
@@ -265,7 +243,7 @@ function trimUtf8Sequence(line: string): string {
             break;
         }
     }
-    return end > 0 ? line.substr(0, end) : line;
+    return end > (line.startsWith('=2D') ? 3 : 0) ? line.substr(0, end) : line;
 }
 
 /**
@@ -367,8 +345,10 @@ export class Encoder extends Transform {
             this._heldByte = undefined;
         }
         if (this._curLine) {
-            this.outputBytes += this._curLine.length;
-            this.push(this._curLine, 'ascii');
+            // it can end with a CR that was not wrapped yet
+            const qp = wrap(this._curLine, this.options.lineLength as number);
+            this.outputBytes += qp.length;
+            this.push(qp, 'ascii');
             this._curLine = '';
         }
         done();
@@ -389,10 +369,13 @@ export class Encoder extends Transform {
             this._lastByte = buf[end - 1];
 
             if (this.options.lineLength) {
-                qp = wrap(this._curLine + qp, this.options.lineLength);
+                qp = this._curLine + qp;
+                // a CR at the end is a line break if LF follows, so it is wrapped once that is known
+                const cr = qp.endsWith('\r') ? '\r' : '';
+                qp = wrap(cr ? qp.slice(0, -1) : qp, this.options.lineLength);
                 // the last line is kept until it is known whether it needs a soft break
                 const lastLF = qp.lastIndexOf('\n');
-                this._curLine = qp.substring(lastLF + 1);
+                this._curLine = qp.substring(lastLF + 1) + cr;
                 qp = qp.substring(0, lastLF + 1);
             }
 
