@@ -37,9 +37,9 @@
         "build": "node scripts/build.js",
         "typecheck": "tsc -p tsconfig.json",
         "pretest": "npm run build",
-        "test": "node --import tsx --test $(find test -name '*-test.ts')",
+        "test": "node --import tsx --test --test-concurrency=1 $(find test -name '*-test.ts')",
         "pretest:coverage": "npm run build",
-        "test:coverage": "c8 node --import tsx --test $(find test -name '*-test.ts')",
+        "test:coverage": "c8 node --import tsx --test --test-concurrency=1 $(find test -name '*-test.ts')",
         "pretest:bun": "npm run build",
         "test:bun": "bun test --timeout 60000 $(find ./test -name '*-test.ts')",
         "format": "prettier --write \"**/*.{js,cjs,ts,json,md,yml,yaml}\"",
@@ -49,7 +49,7 @@
         "prepare": "npm run build",
         "update": "rm -rf node_modules package-lock.json && ncu -u && npm install",
         "test:mutation": "node scripts/mutation-test.js",
-        "test:fuzz": "FUZZ_ITERATIONS=${FUZZ_ITERATIONS:-20000} FUZZ_SEED=${FUZZ_SEED:-random} node --import tsx --test test/property-test.ts test/legacy-test.ts"
+        "test:fuzz": "FUZZ_ITERATIONS=${FUZZ_ITERATIONS:-20000} FUZZ_SEED=${FUZZ_SEED:-random} node --import tsx --test --test-concurrency=1 test/property-test.ts test/legacy-test.ts"
     },
     "repository": {
         "type": "git",
