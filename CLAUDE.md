@@ -14,6 +14,7 @@ Written in TypeScript in `src/libqp.ts` and published as a dual package: ES modu
 - Single file: `node --import tsx --test test/libqp-test.ts`; single test: add `--test-name-pattern="never splits"`.
 - `npm run test:coverage` runs the suite under c8, gated at 100% lines/statements/functions and 95% branches (`.c8rc.json`).
 - `npm run test:bun` runs the same suite under Bun.
+- `npm run test:cjs` builds, then loads the CommonJS build (and `lib/libqp.js`) and exercises the main API with `--no-experimental-require-module` (`test/cjs-smoke.cjs`). CI runs it on Node 22 and 24.
 - Besides the unit tests, the suite has property-based tests (`test/property-test.ts`, fast-check, shared arbitraries in `test/fixtures/fuzz.ts`), differential tests against the published 2.1.3 (`test/legacy-test.ts`, installed as `libqp-legacy`) and scaling tests that catch quadratic regressions by comparing runtimes at two input sizes (`test/complexity-test.ts`). `FUZZ_ITERATIONS` and `FUZZ_SEED` (a number or `random`) tune the property runs.
 - `npm run test:fuzz` runs the property and differential tests with 20k inputs and a random seed. `npm run test:mutation` runs mutation testing (`scripts/mutation-test.js`, slow, not in CI).
 - `npm run lint` runs `tsc --noEmit` over `src/` and `test/`, then ESLint (`eslint.config.js`, the shared flat config from nodemailer; the only local addition treats `lib/**/*.js` as CommonJS).
@@ -22,10 +23,19 @@ Written in TypeScript in `src/libqp.ts` and published as a dual package: ES modu
 
 ## Module format and compatibility
 
-- `engines.node >= 20`. Source is compiled twice from the same file (`tsconfig.esm.json`, `tsconfig.cjs.json`), so `src/` must not use `import.meta`, `require`, `__dirname` or top-level `await`. `erasableSyntaxOnly` and `exactOptionalPropertyTypes` are on: declare every optional property as `T | undefined`.
-- `src/libqp.ts` has named exports plus a default export object. `scripts/build.js` patches the CommonJS output so `require('libqp').default` is the exports object itself (non-enumerable), keeping `Object.keys(require('libqp'))` the same five names as the pre-TypeScript build. CommonJS consumers such as EmailEngine (bundled with `@yao/pkg`) depend on this shape.
-- `package.json` `exports` maps `.`, `./lib/libqp` and `./lib/libqp.js` (the old deep import path) to both builds; `typesVersions` serves node10-resolution TypeScript consumers. `lib/libqp.js` (with `lib/package.json` marking it CommonJS) re-exports the CommonJS build for resolvers that look for the path on disk and ignore `exports` (webpack 4, browserify; `@yao/pkg` prints a "Cannot find module" warning without it, though the binary works). When testing a pkg build, install real `node_modules`: a symlinked `node_modules` makes pkg miss files the exports map points at, and the binary fails at runtime.
+- `engines.node >= 20`, see Platform constraints below. Source is compiled twice from the same file (`tsconfig.esm.json`, `tsconfig.cjs.json`), so `src/` must not use `import.meta`, `require`, `__dirname` or top-level `await`. `erasableSyntaxOnly` and `exactOptionalPropertyTypes` are on: declare every optional property as `T | undefined`.
+- `src/libqp.ts` has named exports plus a default export object. `scripts/build.js` patches the CommonJS output so `require('libqp').default` is the exports object itself (non-enumerable), keeping `Object.keys(require('libqp'))` the same five names as the pre-TypeScript build. CommonJS consumers such as EmailEngine (bundled with `@yao-pkg/pkg`) depend on this shape.
+- `package.json` `exports` maps `.`, `./lib/libqp` and `./lib/libqp.js` (the old deep import path) to both builds; `typesVersions` serves node10-resolution TypeScript consumers. `lib/libqp.js` (with `lib/package.json` marking it CommonJS) re-exports the CommonJS build for resolvers that look for the path on disk and ignore `exports` (webpack 4, browserify; `@yao-pkg/pkg` prints a "Cannot find module" warning without it, though the binary works). When testing a pkg build, install real `node_modules`: a symlinked `node_modules` makes pkg miss files the exports map points at, and the binary fails at runtime.
 - `test/package/` loads the built `dist/` through the exports map in both formats and type-checks consumers against the shipped declarations. Internal stream state is marked `@internal` and stripped (`stripInternal`); the package test checks it stays out of the `.d.ts`.
+
+## Platform constraints
+
+Both rules come from EmailEngine, which ships as a `@yao-pkg/pkg` binary: pkg snapshots a CommonJS module graph and cannot load ES modules.
+
+- **Node.js 20 is the minimum supported version.** Runtime code, tests and tooling must work on Node 20, 22 and 24 (`engines.node` is `>=20.0.0`, `@types/node` stays on the 20.x line).
+- **Everything that reaches runtime must be genuinely CommonJS-loadable.** `require()` of the CommonJS build and of every runtime dependency must work with `--no-experimental-require-module`. Node 22+ (and 20.19) can `require()` an ES module by default, which hides an ESM-only dependency until the pkg binary fails. A CommonJS entry that only wraps a dynamic `import()` does not count.
+- **Check:** `npm run test:cjs`. Run it after `npm run update` or any dependency change; CI runs it on Node 22 and 24.
+- There are no runtime dependencies. Should one ever be added, it must be CommonJS; never add or upgrade to an ESM-only dependency, and when a dependency's next major is ESM-only, pin the last CommonJS major in `.ncurc.cjs` (`reject`, or a `target` of `minor`/`patch`) with a comment giving the reason.
 
 ## Architecture notes
 
@@ -43,7 +53,7 @@ release-please (`.github/workflows/release.yaml`) cuts releases from Conventiona
 
 ## CI
 
-`.github/workflows/test.yml` runs lint, format check and the suite on Node 20, 22, 24 and 26 (`npm ci`, so keep `package-lock.json` committed and in sync), the suite under Bun, and the coverage gate on Node 24. Actions are pinned to commit SHAs with the version in a trailing comment; update both together.
+`.github/workflows/test.yml` runs lint, format check and the suite on Node 20, 22, 24 and 26 (plus `npm run test:cjs` on 22 and 24) (`npm ci`, so keep `package-lock.json` committed and in sync), the suite under Bun, and the coverage gate on Node 24. Actions are pinned to commit SHAs with the version in a trailing comment; update both together.
 
 ## Conventions
 
