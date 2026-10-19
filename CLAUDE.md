@@ -10,13 +10,13 @@ Written in TypeScript in `src/libqp.ts` and published as a dual package: ES modu
 
 ## Commands
 
-- `npm test` builds (`pretest`), then runs every `test/**/*-test.ts` with `node --import tsx --test`.
+- `npm test` builds (`pretest`), then runs every `test/**/*-test.ts` with `node --import tsx --test --test-concurrency=1`. Files run one at a time so the timing comparisons in `test/complexity-test.ts` are not skewed by other files competing for the CPU.
 - Single file: `node --import tsx --test test/libqp-test.ts`; single test: add `--test-name-pattern="never splits"`.
 - `npm run test:coverage` runs the suite under c8, gated at 100% lines/statements/functions and 95% branches (`.c8rc.json`).
 - `npm run test:bun` runs the same suite under Bun.
 - Besides the unit tests, the suite has property-based tests (`test/property-test.ts`, fast-check, shared arbitraries in `test/fixtures/fuzz.ts`), differential tests against the published 2.1.3 (`test/legacy-test.ts`, installed as `libqp-legacy`) and scaling tests that catch quadratic regressions by comparing runtimes at two input sizes (`test/complexity-test.ts`). `FUZZ_ITERATIONS` and `FUZZ_SEED` (a number or `random`) tune the property runs.
 - `npm run test:fuzz` runs the property and differential tests with 20k inputs and a random seed. `npm run test:mutation` runs mutation testing (`scripts/mutation-test.js`, slow, not in CI).
-- `npm run lint` runs `tsc --noEmit` over `src/` and `test/`, then ESLint (`eslint.config.js`, copied from nodemailer).
+- `npm run lint` runs `tsc --noEmit` over `src/` and `test/`, then ESLint (`eslint.config.js`, the shared flat config from nodemailer; the only local addition treats `lib/**/*.js` as CommonJS).
 - `npm run format` / `npm run format:check` (Prettier, `.prettierrc`, 160 columns).
 - `npm run update` refreshes dependencies with ncu; `.ncurc.cjs` keeps `@types/node` on 20.x and TypeScript below 7.
 
@@ -40,3 +40,33 @@ These span several functions and are easy to break:
 ## Releases
 
 release-please (`.github/workflows/release.yaml`) cuts releases from Conventional Commits on `master` and publishes to npm through trusted publishing. Never edit `CHANGELOG.md` or the `package.json` version by hand.
+
+## CI
+
+`.github/workflows/test.yml` runs lint, format check and the suite on Node 20, 22, 24 and 26 (`npm ci`, so keep `package-lock.json` committed and in sync), the suite under Bun, and the coverage gate on Node 24. Actions are pinned to commit SHAs with the version in a trailing comment; update both together.
+
+## Conventions
+
+These mirror the conventions used across Postal Systems projects (see `../emailengine`).
+
+**Git commits**
+
+- Use Conventional Commits: `fix:` (patch release), `feat:` (minor release), and `chore:`/`build:`/`docs:`/`ci:`/`refactor:`/`style:`/`test:` for changes that should not trigger a release. release-please derives the version and changelog from these prefixes.
+- Do **not** list Claude or any AI assistant as a co-author or co-contributor in commit messages or PR descriptions (no `Co-Authored-By` trailer).
+- Append `[skip ci]` to commits that do not change runtime behavior (docs, comments, formatting) to avoid spending CI minutes. Never add it to a `fix:` or `feat:` commit, those must run so the release workflow triggers. GitHub reads the marker off the HEAD commit of a push only, so when a push mixes the two, the release-triggering commit has to be last. Do not use it on commits that change tooling or CI either, they need a run to prove the change.
+
+**Code and docs style**
+
+- No emojis anywhere in code or documentation, printable ASCII only.
+- Use a single hyphen-minus (`-`) as a dash. Never use double hyphens (`--`), em dashes, or en dashes in prose.
+- devDependencies are pinned to exact versions (no `^` or `~`); install with `npm install -D -E`.
+
+**Before committing code changes**
+
+1. `npm run format` and `npm run lint`
+2. `npm test` (and `npm run test:coverage` when `src/` changes, the gate is 100% lines)
+3. For non-trivial changes, consider `/simplify` and `/security-review`. This library decodes untrusted input, so anything in `decode()`, `wrap()` or the stream classes is security-sensitive.
+
+**After pushing**
+
+- Check the workflow runs for the push (`gh run list --branch <branch>`) and report their status. If a run fails for an unrelated or infrastructure reason (checkout reporting "account suspended", HTTP 403, other auth errors), check <https://www.githubstatus.com/> for an active GitHub incident before assuming the change caused it.
