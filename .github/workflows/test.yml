@@ -29,6 +29,10 @@ jobs:
             - run: npm run lint
             - run: npm run format:check
             - run: npm test
+            # Node 22+ can require() an ES module, which would hide an ESM-only dependency from the
+            # suite. EmailEngine's pkg binary cannot load one, so the CommonJS build is loaded with that off
+            - run: npm run test:cjs
+              if: matrix.node == '22.x' || matrix.node == '24.x'
 
     # The library is used from Bun as well: the ES module build and the same test
     # suite are run under the latest Bun release
