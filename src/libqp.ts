@@ -388,9 +388,71 @@ export class Encoder extends Transform {
 }
 
 /**
+ * Finds the last line feed in a chunk after which the input decodes the same as two separate
+ * inputs. decode() joins lines only at soft line breaks, so a hard line break is always such a
+ * point. A soft line break is one too unless the escape in front of it may still be completed by
+ * the next line: "==\nA=\nB" decodes into the single byte 0xAB. It is safe when the two bytes
+ * before its "=" are on the same line and do not end in "=" or in "=" and a hex digit. Every other
+ * rule of decode() is local to a line.
+ *
+ * @param chunk The new input
+ * @param pending The input before the chunk that has not been decoded yet, as binary strings.
+ *        Whatever lies before it is the start of a line
+ * @returns Position of the line feed in the chunk, or -1 if there is no such point
+ */
+function lastLineBreak(chunk: Buffer, pending: string[]): number {
+    for (let feed = chunk.lastIndexOf(0x0a); feed >= 0; feed = feed > 0 ? chunk.lastIndexOf(0x0a, feed - 1) : -1) {
+        // reads the input backwards from the line feed, crossing into the pending input if needed
+        let part = pending.length;
+        let pos = feed;
+        const previous = (): number => {
+            while (--pos < 0) {
+                if (part === 0) {
+                    // the start of the input that is not decoded yet is the start of a line
+                    pos = 0;
+                    return 0x0a;
+                }
+                part--;
+                pos = (pending[part] as string).length;
+            }
+            return part === pending.length ? (chunk[pos] as number) : (pending[part] as string).charCodeAt(pos);
+        };
+
+        // the end of the line as decode() sees it, with whitespace removed before the line feed
+        // and before a CR
+        let byte = previous();
+        while (isWhitespace(byte)) {
+            byte = previous();
+        }
+        if (byte === 0x0d) {
+            byte = previous();
+            while (isWhitespace(byte)) {
+                byte = previous();
+            }
+        }
+        if (byte !== 0x3d) {
+            // a hard line break
+            return feed;
+        }
+
+        const before = previous();
+        const twoBefore = previous();
+        if (before === 0x0a || before === 0x0d || twoBefore === 0x0a || twoBefore === 0x0d) {
+            continue;
+        }
+        if (before === 0x3d || (twoBefore === 0x3d && hexValue(before) >= 0)) {
+            continue;
+        }
+        return feed;
+    }
+    return -1;
+}
+
+/**
  * Creates a transform stream for decoding Quoted-Printable encoded strings.
- * The input is not actually processed as a stream but concatted and processed as a single input,
- * so escapes and soft line breaks split across chunks decode the same as unsplit input
+ * The input is decoded up to the last line break that later input cannot change, so escapes and
+ * soft line breaks split across chunks decode the same as unsplit input, and the output does not
+ * wait for the input to end
  */
 export class Decoder extends Transform {
     options: DecoderOptions;
@@ -411,6 +473,8 @@ export class Decoder extends Transform {
         this.inputBytes = 0;
         this.outputBytes = 0;
 
+        // input that is not decoded yet, kept as binary strings, so joining the chunks is the only
+        // copy made before decoding
         this.qpChunks = [];
     }
 
@@ -421,26 +485,41 @@ export class Decoder extends Transform {
         }
 
         const buf = toBuffer(chunk, encoding);
-
-        // kept as a binary string, so joining the chunks is the only copy made before decoding
-        this.qpChunks.push(buf.toString('binary'));
         this.inputBytes += buf.length;
+
+        const feed = lastLineBreak(buf, this.qpChunks);
+        if (feed < 0) {
+            this.qpChunks.push(buf.toString('binary'));
+            return done();
+        }
+
+        this.qpChunks.push(buf.toString('binary', 0, feed + 1));
+        const input = this.qpChunks.join('');
+        this.qpChunks = feed + 1 < buf.length ? [buf.toString('binary', feed + 1)] : [];
+        this._decode(input);
 
         done();
     }
 
     /** @internal */
     override _flush(done: TransformCallback): void {
-        if (this.inputBytes) {
+        if (this.qpChunks.length) {
             const input = this.qpChunks.join('');
             // the chunks are not needed anymore, release them before decoding allocates more
             this.qpChunks = [];
-            const buf = decode(input);
-            this.outputBytes += buf.length;
-            this.push(buf);
+            this._decode(input);
         }
 
         done();
+    }
+
+    /** @internal */
+    _decode(input: string): void {
+        const buf = decode(input);
+        if (buf.length) {
+            this.outputBytes += buf.length;
+            this.push(buf);
+        }
     }
 }
 

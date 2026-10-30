@@ -587,6 +587,93 @@ describe('Decoder', () => {
         }
     });
 
+    it('decodes the input as it arrives', () => {
+        const line = 'a='.repeat(24) + '=3D=\r\n';
+        const decoder = new Decoder();
+        for (let i = 0; i < 1000; i++) {
+            decoder.write(line);
+            assert.deepStrictEqual(decoder.read(), decode(line), 'line ' + i);
+        }
+        decoder.end();
+    });
+
+    it('decodes lines while their end is split from the rest', () => {
+        const decoder = new Decoder();
+        for (const chunk of ['ab=C3=A9', ' \t', '\r', '\n', 'cd=', '\r', '\n', 'ef', '\n']) {
+            decoder.write(chunk);
+        }
+        assert.strictEqual(decoder.read().toString(), 'ab\u00e9\r\ncdef\n');
+        decoder.end();
+    });
+
+    it('holds back a line that the next line may still change', () => {
+        const decoder = new Decoder();
+        decoder.write('==\n');
+        decoder.write('A=\n');
+        assert.strictEqual(decoder.read(), null);
+        decoder.write('B\n');
+        assert.deepStrictEqual(decoder.read(), Buffer.from([0xab, 0x0a]));
+        decoder.end();
+    });
+
+    it('decodes escapes and soft line breaks the same however the input is split', async () => {
+        const inputs = [
+            '==\nA=\nB',
+            '==\r\nA=\r\nB',
+            'x=A=\nB',
+            'x=a=\r\nb',
+            '=4=\n1',
+            '=\n=\n=\nAB',
+            '\n=\nA',
+            '=\nAB',
+            'a= \t\r \nB',
+            'a==  \r\nAB',
+            'ab=\r\r\nCD',
+            'ab=\rC\nD',
+            '=3D=\nx',
+            '= =\nAB',
+            'ab  =\n\nx  ',
+            '  \n=\n=41',
+            '=C3=\n=A9 \n'
+        ];
+        for (const text of inputs) {
+            for (const prefix of ['', 'line\r\n', 'line=\r\n']) {
+                const input = Buffer.from(prefix + text, 'latin1');
+                const expected = decode(input);
+                for (let size = 1; size <= input.length; size++) {
+                    assert.deepStrictEqual(await decodeStream(split(input, size)), expected, JSON.stringify(prefix + text) + ' chunk size ' + size);
+                }
+                for (let at = 1; at < input.length; at++) {
+                    assert.deepStrictEqual(
+                        await decodeStream([input.subarray(0, at), input.subarray(at)]),
+                        expected,
+                        JSON.stringify(prefix + text) + ' split at ' + at
+                    );
+                }
+            }
+        }
+    });
+
+    it('decodes long input the same as decode() for random chunk sizes', async () => {
+        const fragments = ['=', '==', '=A', '=3D', '=c3', '=\r\n', '=\n', ' ', '\t', '\r', '\n', ' \r\n', 'a', 'B', '\xe9'];
+        // a fixed seed keeps the test reproducible
+        let seed = 1;
+        const random = (max: number): number => {
+            seed = (seed * 1103515245 + 12345) % 2147483648;
+            return seed % max;
+        };
+        for (let run = 0; run < 50; run++) {
+            const input = Buffer.from(Array.from({ length: 2000 }, () => fragments[random(fragments.length)]).join(''), 'latin1');
+            const chunks: Buffer[] = [];
+            for (let pos = 0; pos < input.length;) {
+                const size = 1 + random(run % 2 ? 8 : 512);
+                chunks.push(input.subarray(pos, pos + size));
+                pos += size;
+            }
+            assert.deepStrictEqual(await decodeStream(chunks), decode(input), 'run ' + run);
+        }
+    });
+
     it('keeps the stream options', () => {
         assert.strictEqual(new Decoder({ highWaterMark: 7 }).writableHighWaterMark, 7);
     });
