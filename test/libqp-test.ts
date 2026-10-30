@@ -597,6 +597,26 @@ describe('Decoder', () => {
         decoder.end();
     });
 
+    it('holds back no more than an unfinished escape for lines that end in soft line breaks', () => {
+        // shapes a decoder that cuts its input only at line feeds has to hold whole
+        for (const line of ['a=\r\n', 'abc==\r\n', 'abc=A=\r\n', 'a=\n']) {
+            const decoder = new Decoder();
+            let written = '';
+            let read = 0;
+            for (let i = 0; i < 1000; i++) {
+                decoder.write(line);
+                written += line;
+                let chunk: Buffer | null;
+                while ((chunk = decoder.read()) !== null) {
+                    read += chunk.length;
+                }
+                // at most "=" and a hex digit of an escape the next line may complete are missing
+                assert.ok(decode(written).length - read <= 2, JSON.stringify(line) + ' line ' + i);
+            }
+            decoder.end();
+        }
+    });
+
     it('decodes lines while their end is split from the rest', () => {
         const decoder = new Decoder();
         for (const chunk of ['ab=C3=A9', ' \t', '\r', '\n', 'cd=', '\r', '\n', 'ef', '\n']) {
@@ -634,7 +654,10 @@ describe('Decoder', () => {
             '= =\nAB',
             'ab  =\n\nx  ',
             '  \n=\n=41',
-            '=C3=\n=A9 \n'
+            '=C3=\n=A9 \n',
+            'ab=\r',
+            'ab=4=\r',
+            'ab \t'
         ];
         for (const text of inputs) {
             for (const prefix of ['', 'line\r\n', 'line=\r\n']) {

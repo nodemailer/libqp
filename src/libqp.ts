@@ -388,78 +388,40 @@ export class Encoder extends Transform {
 }
 
 /**
- * Finds the last line feed in a chunk after which the input decodes the same as two separate
- * inputs. decode() joins lines only at soft line breaks, so a hard line break is always such a
- * point. A soft line break is one too unless the escape in front of it may still be completed by
- * the next line: "==\nA=\nB" decodes into the single byte 0xAB. It is safe when the two bytes
- * before its "=" are on the same line and do not end in "=" or in "=" and a hex digit. Every other
- * rule of decode() is local to a line.
- *
- * @param chunk The new input
- * @param pending The input before the chunk that has not been decoded yet, as binary strings.
- *        Whatever lies before it is the start of a line
- * @returns Position of the line feed in the chunk, or -1 if there is no such point
- */
-function lastLineBreak(chunk: Buffer, pending: string[]): number {
-    for (let feed = chunk.lastIndexOf(0x0a); feed >= 0; feed = feed > 0 ? chunk.lastIndexOf(0x0a, feed - 1) : -1) {
-        // reads the input backwards from the line feed, crossing into the pending input if needed
-        let part = pending.length;
-        let pos = feed;
-        const previous = (): number => {
-            while (--pos < 0) {
-                if (part === 0) {
-                    // the start of the input that is not decoded yet is the start of a line
-                    pos = 0;
-                    return 0x0a;
-                }
-                part--;
-                pos = (pending[part] as string).length;
-            }
-            return part === pending.length ? (chunk[pos] as number) : (pending[part] as string).charCodeAt(pos);
-        };
-
-        // the end of the line as decode() sees it, with whitespace removed before the line feed
-        // and before a CR
-        let byte = previous();
-        while (isWhitespace(byte)) {
-            byte = previous();
-        }
-        if (byte === 0x0d) {
-            byte = previous();
-            while (isWhitespace(byte)) {
-                byte = previous();
-            }
-        }
-        if (byte !== 0x3d) {
-            // a hard line break
-            return feed;
-        }
-
-        const before = previous();
-        const twoBefore = previous();
-        if (before === 0x0a || before === 0x0d || twoBefore === 0x0a || twoBefore === 0x0d) {
-            continue;
-        }
-        if (before === 0x3d || (twoBefore === 0x3d && hexValue(before) >= 0)) {
-            continue;
-        }
-        return feed;
-    }
-    return -1;
-}
-
-/**
  * Creates a transform stream for decoding Quoted-Printable encoded strings.
- * The input is decoded up to the last line break that later input cannot change, so escapes and
- * soft line breaks split across chunks decode the same as unsplit input, and the output does not
- * wait for the input to end
+ *
+ * Decodes byte by byte as the input arrives, in the three steps of decode(), each run as a small
+ * state machine: whitespace in front of a line break is removed, then soft line breaks, then
+ * escapes are decoded. Across chunks it carries only what the next bytes can still change: a run
+ * of whitespace that may turn out to end a line, a "=" (or "=" and a CR) that may start a soft
+ * line break, and a "=" (or "=" and a hex digit) that may start an escape. Escapes and soft line
+ * breaks split across chunks or lines decode the same as unsplit input ("==\nA=\nB" is the single
+ * byte 0xAB), and the output equals decode() of the whole input however the input is split.
  */
 export class Decoder extends Transform {
     options: DecoderOptions;
     inputBytes: number;
     outputBytes: number;
+    /**
+     * Whitespace that ends the input so far, as [byte, count] runs: dropped when a line break or the
+     * end of the input follows, passed on otherwise
+     * @internal
+     */
+    _blanks: number[];
     /** @internal */
-    qpChunks: string[];
+    _blankCount: number;
+    /** Soft line break step: 0, or 1 after a "=", or 2 after "=" and a CR @internal */
+    _soft: number;
+    /** Escape step: 0, or 1 after a "=", or 2 after "=" and a hex digit @internal */
+    _escape: number;
+    /** The hex digit after "=" in escape step 2 @internal */
+    _escapeHigh: number;
+    /** @internal */
+    _out: Buffer;
+    /** @internal */
+    _outPos: number;
+    /** Input bytes of the current chunk not processed yet, the current one included @internal */
+    _left: number;
 
     /**
      * @param [options] Stream options
@@ -473,9 +435,14 @@ export class Decoder extends Transform {
         this.inputBytes = 0;
         this.outputBytes = 0;
 
-        // input that is not decoded yet, kept as binary strings, so joining the chunks is the only
-        // copy made before decoding
-        this.qpChunks = [];
+        this._blanks = [];
+        this._blankCount = 0;
+        this._soft = 0;
+        this._escape = 0;
+        this._escapeHigh = 0;
+        this._out = Buffer.alloc(0);
+        this._outPos = 0;
+        this._left = 0;
     }
 
     /** @internal */
@@ -487,39 +454,157 @@ export class Decoder extends Transform {
         const buf = toBuffer(chunk, encoding);
         this.inputBytes += buf.length;
 
-        const feed = lastLineBreak(buf, this.qpChunks);
-        if (feed < 0) {
-            this.qpChunks.push(buf.toString('binary'));
-            return done();
+        // all output comes from input bytes: those of this chunk and those held back before it, at
+        // most four bytes of a soft line break and an escape, and whitespace (room made when it is kept)
+        this._begin(buf.length + 4);
+        for (let i = 0; i < buf.length; i++) {
+            this._left = buf.length - i;
+            this._trim(buf[i] as number);
         }
-
-        this.qpChunks.push(buf.toString('binary', 0, feed + 1));
-        const input = this.qpChunks.join('');
-        this.qpChunks = feed + 1 < buf.length ? [buf.toString('binary', feed + 1)] : [];
-        this._decode(input);
+        this._left = 0;
+        this._end();
 
         done();
     }
 
     /** @internal */
     override _flush(done: TransformCallback): void {
-        if (this.qpChunks.length) {
-            const input = this.qpChunks.join('');
-            // the chunks are not needed anymore, release them before decoding allocates more
-            this.qpChunks = [];
-            this._decode(input);
+        this._begin(4);
+        // whitespace at the end of the input is removed
+        this._blanks = [];
+        this._blankCount = 0;
+        if (this._soft === 2) {
+            // "=" and a CR at the end are no soft line break
+            this._unescape(0x3d);
+            this._unescape(0x0d);
         }
+        // a "=" at the end is a soft line break and is removed
+        this._soft = 0;
+        if (this._escape >= 1) {
+            this._emit(0x3d);
+        }
+        if (this._escape === 2) {
+            this._emit(this._escapeHigh);
+        }
+        this._escape = 0;
+        this._end();
 
         done();
     }
 
-    /** @internal */
-    _decode(input: string): void {
-        const buf = decode(input);
-        if (buf.length) {
-            this.outputBytes += buf.length;
-            this.push(buf);
+    /** Step 1, whitespace in front of a line break @internal */
+    _trim(byte: number): void {
+        if (byte === 0x20 || byte === 0x09) {
+            const runs = this._blanks;
+            if (runs.length && runs[runs.length - 2] === byte) {
+                runs[runs.length - 1]++;
+            } else {
+                runs.push(byte, 1);
+            }
+            this._blankCount++;
+            return;
         }
+        if (this._blankCount) {
+            if (byte !== 0x0a && byte !== 0x0d) {
+                // not at the end of a line: the whitespace is kept
+                this._reserve(this._blankCount);
+                const runs = this._blanks;
+                for (let r = 0; r < runs.length; r += 2) {
+                    for (let n = runs[r + 1] as number; n > 0; n--) {
+                        this._soften(runs[r] as number);
+                    }
+                }
+            }
+            this._blanks = [];
+            this._blankCount = 0;
+        }
+        this._soften(byte);
+    }
+
+    /** Step 2, soft line breaks: "=" followed by LF or CR LF @internal */
+    _soften(byte: number): void {
+        if (this._soft === 1) {
+            if (byte === 0x0a) {
+                this._soft = 0;
+                return;
+            }
+            if (byte === 0x0d) {
+                this._soft = 2;
+                return;
+            }
+            this._soft = 0;
+            this._unescape(0x3d);
+        } else if (this._soft === 2) {
+            this._soft = 0;
+            if (byte === 0x0a) {
+                return;
+            }
+            this._unescape(0x3d);
+            this._unescape(0x0d);
+        }
+        if (byte === 0x3d) {
+            this._soft = 1;
+            return;
+        }
+        this._unescape(byte);
+    }
+
+    /** Step 3, escapes: "=" followed by two hex digits @internal */
+    _unescape(byte: number): void {
+        if (this._escape === 1) {
+            if (hexValue(byte) >= 0) {
+                this._escape = 2;
+                this._escapeHigh = byte;
+                return;
+            }
+            this._escape = 0;
+            this._emit(0x3d);
+        } else if (this._escape === 2) {
+            this._escape = 0;
+            const low = hexValue(byte);
+            if (low >= 0) {
+                this._emit(hexValue(this._escapeHigh) * 16 + low);
+                return;
+            }
+            this._emit(0x3d);
+            this._emit(this._escapeHigh);
+        }
+        if (byte === 0x3d) {
+            this._escape = 1;
+            return;
+        }
+        this._emit(byte);
+    }
+
+    /** @internal */
+    _begin(size: number): void {
+        this._out = Buffer.allocUnsafe(size);
+        this._outPos = 0;
+    }
+
+    /** Makes room for `size` more bytes besides the rest of the current chunk @internal */
+    _reserve(size: number): void {
+        const needed = this._outPos + size + this._left + 4;
+        if (needed > this._out.length) {
+            const out = Buffer.allocUnsafe(Math.max(this._out.length * 2, needed));
+            this._out.copy(out, 0, 0, this._outPos);
+            this._out = out;
+        }
+    }
+
+    /** @internal */
+    _emit(byte: number): void {
+        this._out[this._outPos++] = byte;
+    }
+
+    /** @internal */
+    _end(): void {
+        if (this._outPos) {
+            this.outputBytes += this._outPos;
+            this.push(this._out.subarray(0, this._outPos));
+        }
+        this._out = Buffer.alloc(0);
+        this._outPos = 0;
     }
 }
 
