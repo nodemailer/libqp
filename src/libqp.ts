@@ -387,17 +387,47 @@ export class Encoder extends Transform {
     }
 }
 
+/** The size the Decoder's buffer for a pending whitespace run starts at */
+const BLANKS_START = 64;
+/** A whitespace run buffer up to this size is kept for the next run, a larger one is dropped */
+const BLANKS_KEEP = 64 * 1024;
+
 /**
  * Creates a transform stream for decoding Quoted-Printable encoded strings.
- * The input is not actually processed as a stream but concatted and processed as a single input,
- * so escapes and soft line breaks split across chunks decode the same as unsplit input
+ *
+ * Decodes byte by byte as the input arrives, in the three steps of decode(), each run as a small
+ * state machine: whitespace in front of a line break is removed, then soft line breaks, then
+ * escapes are decoded. Across chunks it carries only what the next bytes can still change: a run
+ * of whitespace that may turn out to end a line, a "=" (or "=" and a CR) that may start a soft
+ * line break, and a "=" (or "=" and a hex digit) that may start an escape. Escapes and soft line
+ * breaks split across chunks or lines decode the same as unsplit input ("==\nA=\nB" is the single
+ * byte 0xAB), and the output equals decode() of the whole input however the input is split.
  */
 export class Decoder extends Transform {
     options: DecoderOptions;
     inputBytes: number;
     outputBytes: number;
+    /**
+     * Whitespace that ends the input so far, one byte per input byte in its first `_blankCount`
+     * bytes: dropped when a line break or the end of the input follows, passed on otherwise. Grows
+     * geometrically with the run, so it holds at most twice the longest run
+     * @internal
+     */
+    _blanks: Buffer;
     /** @internal */
-    qpChunks: string[];
+    _blankCount: number;
+    /** Soft line break step: 0, or 1 after a "=", or 2 after "=" and a CR @internal */
+    _soft: number;
+    /** Escape step: 0, or 1 after a "=", or 2 after "=" and a hex digit @internal */
+    _escape: number;
+    /** The hex digit after "=" in escape step 2 @internal */
+    _escapeHigh: number;
+    /** @internal */
+    _out: Buffer;
+    /** @internal */
+    _outPos: number;
+    /** Input bytes of the current chunk not processed yet, the current one included @internal */
+    _left: number;
 
     /**
      * @param [options] Stream options
@@ -411,7 +441,14 @@ export class Decoder extends Transform {
         this.inputBytes = 0;
         this.outputBytes = 0;
 
-        this.qpChunks = [];
+        this._blanks = Buffer.alloc(0);
+        this._blankCount = 0;
+        this._soft = 0;
+        this._escape = 0;
+        this._escapeHigh = 0;
+        this._out = Buffer.alloc(0);
+        this._outPos = 0;
+        this._left = 0;
     }
 
     /** @internal */
@@ -421,26 +458,162 @@ export class Decoder extends Transform {
         }
 
         const buf = toBuffer(chunk, encoding);
-
-        // kept as a binary string, so joining the chunks is the only copy made before decoding
-        this.qpChunks.push(buf.toString('binary'));
         this.inputBytes += buf.length;
+
+        // all output comes from input bytes: those of this chunk and those held back before it, at
+        // most four bytes of a soft line break and an escape, and whitespace (room made when it is kept)
+        this._begin(buf.length + 4);
+        for (let i = 0; i < buf.length; i++) {
+            this._left = buf.length - i;
+            this._trim(buf[i] as number);
+        }
+        this._left = 0;
+        this._end();
 
         done();
     }
 
     /** @internal */
     override _flush(done: TransformCallback): void {
-        if (this.inputBytes) {
-            const input = this.qpChunks.join('');
-            // the chunks are not needed anymore, release them before decoding allocates more
-            this.qpChunks = [];
-            const buf = decode(input);
-            this.outputBytes += buf.length;
-            this.push(buf);
+        this._begin(4);
+        // whitespace at the end of the input is removed
+        this._dropBlanks();
+        if (this._soft === 2) {
+            // "=" and a CR at the end are no soft line break
+            this._unescape(0x3d);
+            this._unescape(0x0d);
         }
+        // a "=" at the end is a soft line break and is removed
+        this._soft = 0;
+        if (this._escape >= 1) {
+            this._emit(0x3d);
+        }
+        if (this._escape === 2) {
+            this._emit(this._escapeHigh);
+        }
+        this._escape = 0;
+        this._end();
 
         done();
+    }
+
+    /** Step 1, whitespace in front of a line break @internal */
+    _trim(byte: number): void {
+        if (byte === 0x20 || byte === 0x09) {
+            if (this._blankCount === this._blanks.length) {
+                const blanks = Buffer.allocUnsafe(Math.max(BLANKS_START, this._blanks.length * 2));
+                this._blanks.copy(blanks, 0, 0, this._blankCount);
+                this._blanks = blanks;
+            }
+            this._blanks[this._blankCount++] = byte;
+            return;
+        }
+        if (this._blankCount) {
+            if (byte !== 0x0a && byte !== 0x0d) {
+                // not at the end of a line: the whitespace is kept. Its first byte completes what a
+                // "=" in front of it started; after that no soft line break or escape is pending, and
+                // the rest passes through both steps unchanged
+                this._reserve(this._blankCount);
+                this._soften(this._blanks[0] as number);
+                this._outPos += this._blanks.copy(this._out, this._outPos, 1, this._blankCount);
+            }
+            this._dropBlanks();
+        }
+        this._soften(byte);
+    }
+
+    /** Ends the pending whitespace run, keeping a small buffer for the next one @internal */
+    _dropBlanks(): void {
+        this._blankCount = 0;
+        if (this._blanks.length > BLANKS_KEEP) {
+            this._blanks = Buffer.alloc(0);
+        }
+    }
+
+    /** Step 2, soft line breaks: "=" followed by LF or CR LF @internal */
+    _soften(byte: number): void {
+        if (this._soft === 1) {
+            if (byte === 0x0a) {
+                this._soft = 0;
+                return;
+            }
+            if (byte === 0x0d) {
+                this._soft = 2;
+                return;
+            }
+            this._soft = 0;
+            this._unescape(0x3d);
+        } else if (this._soft === 2) {
+            this._soft = 0;
+            if (byte === 0x0a) {
+                return;
+            }
+            this._unescape(0x3d);
+            this._unescape(0x0d);
+        }
+        if (byte === 0x3d) {
+            this._soft = 1;
+            return;
+        }
+        this._unescape(byte);
+    }
+
+    /** Step 3, escapes: "=" followed by two hex digits @internal */
+    _unescape(byte: number): void {
+        if (this._escape === 1) {
+            if (hexValue(byte) >= 0) {
+                this._escape = 2;
+                this._escapeHigh = byte;
+                return;
+            }
+            this._escape = 0;
+            this._emit(0x3d);
+        } else if (this._escape === 2) {
+            this._escape = 0;
+            const low = hexValue(byte);
+            if (low >= 0) {
+                this._emit(hexValue(this._escapeHigh) * 16 + low);
+                return;
+            }
+            this._emit(0x3d);
+            this._emit(this._escapeHigh);
+        }
+        if (byte === 0x3d) {
+            this._escape = 1;
+            return;
+        }
+        this._emit(byte);
+    }
+
+    /** @internal */
+    _begin(size: number): void {
+        this._out = Buffer.allocUnsafe(size);
+        this._outPos = 0;
+    }
+
+    /** Makes room for `size` more bytes besides the rest of the current chunk @internal */
+    _reserve(size: number): void {
+        const needed = this._outPos + size + this._left + 4;
+        if (needed > this._out.length) {
+            const out = Buffer.allocUnsafe(Math.max(this._out.length * 2, needed));
+            this._out.copy(out, 0, 0, this._outPos);
+            this._out = out;
+        }
+    }
+
+    /** @internal */
+    _emit(byte: number): void {
+        this._out[this._outPos++] = byte;
+    }
+
+    /** @internal */
+    _end(): void {
+        if (this._outPos) {
+            this.outputBytes += this._outPos;
+            this.push(this._out.subarray(0, this._outPos));
+        }
+        this._out = Buffer.alloc(0);
+        this._outPos = 0;
     }
 }
 

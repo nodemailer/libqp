@@ -37,8 +37,31 @@ export const text = (maxLength = 120): fc.Arbitrary<string> =>
         .map(list => list.join(''));
 
 // Quoted-Printable looking input that is not necessarily valid: escapes (also broken and lowercase
-// ones), soft line breaks, whitespace in front of line breaks, and raw bytes
-const QP_FRAGMENTS = ['=', '=3D', '=C3', '=c3', '=4', '=G1', '=\r\n', '=\n', ' \r\n', '\t\n', ' ', '\t', '\r', '\n', 'a', '-', '\xe9', '\xff'];
+// ones, and ones that soft line breaks split, like "==\nA=\nB"), soft line breaks, whitespace in
+// front of line breaks, and raw bytes
+const QP_FRAGMENTS = [
+    '=',
+    '==',
+    '=A',
+    '=3D',
+    '=C3',
+    '=c3',
+    '=4',
+    '=G1',
+    '=\r\n',
+    '=\n',
+    ' \r\n',
+    '\t\n',
+    ' ',
+    '\t',
+    ' \t \t',
+    '\r',
+    '\n',
+    'a',
+    '-',
+    '\xe9',
+    '\xff'
+];
 
 export const qpInput = (maxLength = 120): fc.Arbitrary<Buffer> =>
     fc
