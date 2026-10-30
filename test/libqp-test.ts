@@ -617,6 +617,50 @@ describe('Decoder', () => {
         }
     });
 
+    it('holds a pending whitespace run in one byte per input byte', () => {
+        // alternating tabs and spaces: a run held as [byte, count] pairs took 16 bytes per input byte
+        const run = ' \t'.repeat(128 * 1024);
+        const decoder = new Decoder();
+        for (let i = 0; i < run.length; i += 1000) {
+            decoder.write(run.slice(i, i + 1000));
+        }
+        assert.strictEqual(decoder.read(), null);
+        assert.strictEqual(decoder._blankCount, run.length);
+        assert.ok(decoder._blanks.length < 2 * run.length, String(decoder._blanks.length));
+        decoder.write('x');
+        assert.strictEqual(decoder.read().toString('latin1'), run + 'x');
+        // the large buffer of a run that ended is not kept for the next one
+        assert.ok(decoder._blanks.length <= 64 * 1024, String(decoder._blanks.length));
+        decoder.end();
+    });
+
+    it('decodes alternating tab and space runs of every length the same as decode()', async () => {
+        // lengths around the steps the run buffer grows in and the size up to which it is kept
+        for (const length of [1, 2, 63, 64, 65, 128, 129, 65535, 65536, 65537, 131073]) {
+            const run = '\t '.repeat(length).slice(0, length);
+            for (const [before, after] of [
+                ['', 'x'],
+                ['=', 'x'],
+                ['=4', '1'],
+                ['=\r', 'x'],
+                ['a', '\r\n'],
+                ['a', '\n'],
+                ['a', '=\r\nb'],
+                ['a', '']
+            ]) {
+                const input = Buffer.from(before + run + after, 'latin1');
+                const expected = decode(input);
+                for (const size of [1, 7, 4096, input.length]) {
+                    assert.deepStrictEqual(
+                        await decodeStream(split(input, size)),
+                        expected,
+                        `${JSON.stringify(before)} ${length} ${JSON.stringify(after)} in ${size} byte chunks`
+                    );
+                }
+            }
+        }
+    });
+
     it('decodes lines while their end is split from the rest', () => {
         const decoder = new Decoder();
         for (const chunk of ['ab=C3=A9', ' \t', '\r', '\n', 'cd=', '\r', '\n', 'ef', '\n']) {

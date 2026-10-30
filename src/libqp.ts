@@ -387,6 +387,11 @@ export class Encoder extends Transform {
     }
 }
 
+/** The size the Decoder's buffer for a pending whitespace run starts at */
+const BLANKS_START = 64;
+/** A whitespace run buffer up to this size is kept for the next run, a larger one is dropped */
+const BLANKS_KEEP = 64 * 1024;
+
 /**
  * Creates a transform stream for decoding Quoted-Printable encoded strings.
  *
@@ -403,11 +408,12 @@ export class Decoder extends Transform {
     inputBytes: number;
     outputBytes: number;
     /**
-     * Whitespace that ends the input so far, as [byte, count] runs: dropped when a line break or the
-     * end of the input follows, passed on otherwise
+     * Whitespace that ends the input so far, one byte per input byte in its first `_blankCount`
+     * bytes: dropped when a line break or the end of the input follows, passed on otherwise. Grows
+     * geometrically with the run, so it holds at most twice the longest run
      * @internal
      */
-    _blanks: number[];
+    _blanks: Buffer;
     /** @internal */
     _blankCount: number;
     /** Soft line break step: 0, or 1 after a "=", or 2 after "=" and a CR @internal */
@@ -435,7 +441,7 @@ export class Decoder extends Transform {
         this.inputBytes = 0;
         this.outputBytes = 0;
 
-        this._blanks = [];
+        this._blanks = Buffer.alloc(0);
         this._blankCount = 0;
         this._soft = 0;
         this._escape = 0;
@@ -471,8 +477,7 @@ export class Decoder extends Transform {
     override _flush(done: TransformCallback): void {
         this._begin(4);
         // whitespace at the end of the input is removed
-        this._blanks = [];
-        this._blankCount = 0;
+        this._dropBlanks();
         if (this._soft === 2) {
             // "=" and a CR at the end are no soft line break
             this._unescape(0x3d);
@@ -495,30 +500,34 @@ export class Decoder extends Transform {
     /** Step 1, whitespace in front of a line break @internal */
     _trim(byte: number): void {
         if (byte === 0x20 || byte === 0x09) {
-            const runs = this._blanks;
-            if (runs.length && runs[runs.length - 2] === byte) {
-                runs[runs.length - 1]++;
-            } else {
-                runs.push(byte, 1);
+            if (this._blankCount === this._blanks.length) {
+                const blanks = Buffer.allocUnsafe(Math.max(BLANKS_START, this._blanks.length * 2));
+                this._blanks.copy(blanks, 0, 0, this._blankCount);
+                this._blanks = blanks;
             }
-            this._blankCount++;
+            this._blanks[this._blankCount++] = byte;
             return;
         }
         if (this._blankCount) {
             if (byte !== 0x0a && byte !== 0x0d) {
-                // not at the end of a line: the whitespace is kept
+                // not at the end of a line: the whitespace is kept. Its first byte completes what a
+                // "=" in front of it started; after that no soft line break or escape is pending, and
+                // the rest passes through both steps unchanged
                 this._reserve(this._blankCount);
-                const runs = this._blanks;
-                for (let r = 0; r < runs.length; r += 2) {
-                    for (let n = runs[r + 1] as number; n > 0; n--) {
-                        this._soften(runs[r] as number);
-                    }
-                }
+                this._soften(this._blanks[0] as number);
+                this._outPos += this._blanks.copy(this._out, this._outPos, 1, this._blankCount);
             }
-            this._blanks = [];
-            this._blankCount = 0;
+            this._dropBlanks();
         }
         this._soften(byte);
+    }
+
+    /** Ends the pending whitespace run, keeping a small buffer for the next one @internal */
+    _dropBlanks(): void {
+        this._blankCount = 0;
+        if (this._blanks.length > BLANKS_KEEP) {
+            this._blanks = Buffer.alloc(0);
+        }
     }
 
     /** Step 2, soft line breaks: "=" followed by LF or CR LF @internal */

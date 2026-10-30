@@ -88,10 +88,11 @@ describe('Linear time', { timeout: 120 * 1000 }, () => {
         await assertLinear('one byte chunks', 4 * 1024, repeat('=C3 =\r\n'), input => pipeChunks(new Decoder(), split(Buffer.from(input), [1])));
     });
 
-    // the Decoder looks back from every line feed to find out if it may decode up to it
+    // the Decoder holds back soft line breaks, escapes and whitespace runs the next bytes may change
     const decoderInputs: Array<[string, (size: number) => string]> = [
         ['line feeds it may not decode up to', repeat('==\n')],
         ['whitespace in front of a line feed', size => '=' + ' '.repeat(size) + '\n'],
+        ['alternating tabs and spaces in front of a byte', size => '=' + repeat('\t ')(size) + 'x'],
         ['whitespace lines', repeat(' \t\r\n')]
     ];
     for (const [label, make] of decoderInputs) {
