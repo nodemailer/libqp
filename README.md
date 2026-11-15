@@ -129,7 +129,7 @@ Where
 
 - **options** is the optional stream options object
 
-The Decoder collects its input and decodes it once the input ends, so escape sequences and soft line breaks split between chunks are decoded correctly.
+The Decoder decodes its input byte by byte as it arrives and holds back only what the following input can still change: whitespace that may end a line, a `=` that may start a soft line break, and an escape sequence that is not complete yet. Escape sequences and soft line breaks split between chunks or lines are decoded the same as with `decode()` of the whole input.
 
 **Example**
 
