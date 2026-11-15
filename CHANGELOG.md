@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.2](https://github.com/nodemailer/libqp/compare/v3.0.1...v3.0.2) (2026-11-15)
+
+
+### Bug Fixes
+
+* **decoder:** decode the input as it arrives instead of buffering it until the end ([#8](https://github.com/nodemailer/libqp/issues/8)) ([872ef59](https://github.com/nodemailer/libqp/commit/872ef59fc2efe59768ad43536600d29c1f590794))
+
 ## [3.0.1](https://github.com/nodemailer/libqp/compare/v3.0.0...v3.0.1) (2026-10-18)
 
 
