@@ -30,6 +30,17 @@ const split = (input: Buffer, size: number): Buffer[] => {
     return chunks;
 };
 
+// everything the stream has buffered for reading; read() returns one buffered chunk at a time on
+// Node 26+ and Bun, where Node 24 and older join them
+const readAvailable = (stream: Decoder): Buffer => {
+    const chunks: Buffer[] = [];
+    let chunk: Buffer | null;
+    while ((chunk = stream.read()) !== null) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+};
+
 const allBytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
 
 // Example taken from RFC2045 section 6.7
@@ -592,7 +603,7 @@ describe('Decoder', () => {
         const decoder = new Decoder();
         for (let i = 0; i < 1000; i++) {
             decoder.write(line);
-            assert.deepStrictEqual(decoder.read(), decode(line), 'line ' + i);
+            assert.deepStrictEqual(readAvailable(decoder), decode(line), 'line ' + i);
         }
         decoder.end();
     });
@@ -628,7 +639,7 @@ describe('Decoder', () => {
         assert.strictEqual(decoder._blankCount, run.length);
         assert.ok(decoder._blanks.length < 2 * run.length, String(decoder._blanks.length));
         decoder.write('x');
-        assert.strictEqual(decoder.read().toString('latin1'), run + 'x');
+        assert.strictEqual(readAvailable(decoder).toString('latin1'), run + 'x');
         // the large buffer of a run that ended is not kept for the next one
         assert.ok(decoder._blanks.length <= 64 * 1024, String(decoder._blanks.length));
         decoder.end();
@@ -666,7 +677,7 @@ describe('Decoder', () => {
         for (const chunk of ['ab=C3=A9', ' \t', '\r', '\n', 'cd=', '\r', '\n', 'ef', '\n']) {
             decoder.write(chunk);
         }
-        assert.strictEqual(decoder.read().toString(), 'ab\u00e9\r\ncdef\n');
+        assert.strictEqual(readAvailable(decoder).toString(), 'ab\u00e9\r\ncdef\n');
         decoder.end();
     });
 
@@ -676,7 +687,7 @@ describe('Decoder', () => {
         decoder.write('A=\n');
         assert.strictEqual(decoder.read(), null);
         decoder.write('B\n');
-        assert.deepStrictEqual(decoder.read(), Buffer.from([0xab, 0x0a]));
+        assert.deepStrictEqual(readAvailable(decoder), Buffer.from([0xab, 0x0a]));
         decoder.end();
     });
 
